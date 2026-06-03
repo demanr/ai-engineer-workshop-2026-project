@@ -13,6 +13,7 @@ import {
 } from "~/services/progressService";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { isTeamAdmin } from "~/services/teamService";
+import { calculateLevel } from "~/services/gamificationService";
 
 export async function loader({ request }: Route.LoaderArgs) {
   const users = getAllUsers();
@@ -54,6 +55,9 @@ export async function loader({ request }: Route.LoaderArgs) {
           name: currentUser.name,
           role: currentUser.role,
           avatarUrl: currentUser.avatarUrl ?? null,
+          totalPoints: currentUser.totalPoints ?? 0,
+          level: calculateLevel(currentUser.totalPoints ?? 0),
+          streakCount: currentUser.streakCount ?? 0,
         }
       : null,
     recentCourses,

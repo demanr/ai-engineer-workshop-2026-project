@@ -28,6 +28,14 @@ export enum TeamMemberRole {
   Member = "member",
 }
 
+export enum PointsReason {
+  LessonComplete = "lesson_complete",
+  QuizPass = "quiz_pass",
+  FirstTryBonus = "first_try_bonus",
+  StreakMilestone = "streak_milestone",
+  CourseComplete = "course_complete",
+}
+
 // ─── Tables ───
 
 export const users = sqliteTable("users", {
@@ -37,6 +45,23 @@ export const users = sqliteTable("users", {
   role: text("role").notNull().$type<UserRole>(),
   avatarUrl: text("avatar_url"),
   bio: text("bio"),
+  totalPoints: integer("total_points").notNull().default(0),
+  streakCount: integer("streak_count").notNull().default(0),
+  lastActivityDate: text("last_activity_date"),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const userPointsLog = sqliteTable("user_points_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id),
+  points: integer("points").notNull(),
+  reason: text("reason").notNull().$type<PointsReason>(),
+  referenceId: integer("reference_id").notNull(),
+  metadata: text("metadata"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

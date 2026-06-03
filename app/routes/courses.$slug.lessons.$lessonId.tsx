@@ -26,6 +26,7 @@ import {
   getBestAttempt,
 } from "~/services/quizService";
 import { computeResult } from "~/services/quizScoringService";
+import { awardLessonXp } from "~/services/gamificationService";
 import { LessonProgressStatus } from "~/db/schema";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
@@ -302,7 +303,8 @@ export async function action({ params, request }: Route.ActionArgs) {
 
   if (intent === "mark-complete") {
     markLessonComplete(currentUserId, lessonId);
-    return { success: true };
+    const xpResult = awardLessonXp(currentUserId, lessonId, course.id);
+    return { success: true, xpResult };
   }
 
   if (intent === "submit-quiz") {
@@ -397,12 +399,21 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
   const isCompleted =
     lessonStatus === LessonProgressStatus.Completed || justCompleted;
 
-  // Navigate to next lesson after marking complete
   useEffect(() => {
-    if (justCompleted && nextLesson) {
-      navigate(`/courses/${course.slug}/lessons/${nextLesson.id}`);
+    if (justCompleted) {
+      const xp = fetcher.data?.xpResult;
+      if (xp?.xpAwarded && xp.xpAwarded > 0) {
+        toast.success(`+${xp.xpAwarded} XP`, {
+          description: xp.levelUp
+            ? `🎉 Level ${xp.newLevel}!`
+            : undefined,
+        });
+      }
+      if (nextLesson) {
+        navigate(`/courses/${course.slug}/lessons/${nextLesson.id}`);
+      }
     }
-  }, [justCompleted, nextLesson, course.slug, navigate]);
+  }, [justCompleted, nextLesson, course.slug, navigate, fetcher.data]);
 
   const quizResult = quizFetcher.data?.quizResult ?? null;
   const isSubmittingQuiz = quizFetcher.state !== "idle";

@@ -6,11 +6,11 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
-# jq filter to extract streaming text from assistant messages
-stream_text='select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
+# jq filter to extract streaming text from assistant text events
+stream_text='select(.type == "text" and .stream == true).text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
 
-# jq filter to extract final result
-final_result='select(.type == "result").result // empty'
+# jq filter to extract final result message
+final_result='select(.type == "text" and .stream == false).text // empty'
 
 for ((i=1; i<=$1; i++)); do
   tmpfile=$(mktemp)
@@ -20,10 +20,8 @@ for ((i=1; i<=$1; i++)); do
   issues=$(cat issues/*.md 2>/dev/null || echo "No issues found")
   prompt=$(cat ralph/prompt.md)
 
-  docker sandbox run claude . -- \
-    --verbose \
-    --print \
-    --output-format stream-json \
+  opencode run --model opencode/big-pickle --dangerously-skip-permissions \
+    --format json \
     "Previous commits: $commits Issues: $issues $prompt" \
   | grep --line-buffered '^{' \
   | tee "$tmpfile" \

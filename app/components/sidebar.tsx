@@ -22,6 +22,9 @@ interface CurrentUser {
   name: string;
   role: UserRole;
   avatarUrl: string | null;
+  totalPoints: number;
+  level: number;
+  streakCount: number;
 }
 
 interface RecentCourse {
@@ -219,6 +222,15 @@ export function Sidebar({
               </div>
               <div className="truncate text-xs capitalize text-sidebar-foreground/50">
                 {currentUser.role}
+              </div>
+              <div className="mt-0.5 truncate text-xs text-sidebar-foreground/50">
+                ★ Lv {currentUser.level} │{" "}
+                {currentUser.totalPoints.toLocaleString()} XP
+                {currentUser.streakCount > 0 && (
+                  <>
+                    {" "}│ 🔥 {currentUser.streakCount} days
+                  </>
+                )}
               </div>
             </div>
             <NavLink
