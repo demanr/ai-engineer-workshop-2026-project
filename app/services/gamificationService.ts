@@ -217,6 +217,103 @@ export function awardLessonXp(
   };
 }
 
+export function awardQuizXp(
+  userId: number,
+  quizId: number,
+  firstTry: boolean,
+) {
+  const existing = db
+    .select()
+    .from(userPointsLog)
+    .where(
+      and(
+        eq(userPointsLog.userId, userId),
+        eq(userPointsLog.reason, PointsReason.QuizPass),
+        eq(userPointsLog.referenceId, quizId),
+      ),
+    )
+    .get();
+
+  if (existing) {
+    const user = db
+      .select()
+      .from(users)
+      .where(eq(users.id, userId))
+      .get()!;
+    const level = calculateLevel(user.totalPoints);
+    return {
+      xpAwarded: 0,
+      firstTryBonus: false,
+      levelUp: false,
+      newLevel: level,
+    };
+  }
+
+  const user = db
+    .select()
+    .from(users)
+    .where(eq(users.id, userId))
+    .get()!;
+
+  const beforeLevel = calculateLevel(user.totalPoints);
+  const quizXp = 25;
+  const firstTryBonusXp = 15;
+  let totalXpAwarded = quizXp;
+  let awardedFirstTryBonus = false;
+
+  db.insert(userPointsLog)
+    .values({
+      userId,
+      points: quizXp,
+      reason: PointsReason.QuizPass,
+      referenceId: quizId,
+    })
+    .run();
+
+  if (firstTry) {
+    const existingBonus = db
+      .select()
+      .from(userPointsLog)
+      .where(
+        and(
+          eq(userPointsLog.userId, userId),
+          eq(userPointsLog.reason, PointsReason.FirstTryBonus),
+          eq(userPointsLog.referenceId, quizId),
+        ),
+      )
+      .get();
+
+    if (!existingBonus) {
+      awardedFirstTryBonus = true;
+      totalXpAwarded += firstTryBonusXp;
+      db.insert(userPointsLog)
+        .values({
+          userId,
+          points: firstTryBonusXp,
+          reason: PointsReason.FirstTryBonus,
+          referenceId: quizId,
+        })
+        .run();
+    }
+  }
+
+  const newTotalPoints = user.totalPoints + totalXpAwarded;
+
+  db.update(users)
+    .set({ totalPoints: newTotalPoints })
+    .where(eq(users.id, userId))
+    .run();
+
+  const afterLevel = calculateLevel(newTotalPoints);
+
+  return {
+    xpAwarded: totalXpAwarded,
+    firstTryBonus: awardedFirstTryBonus,
+    levelUp: afterLevel > beforeLevel,
+    newLevel: afterLevel,
+  };
+}
+
 export function getUserStats(userId: number) {
   const user = db
     .select()

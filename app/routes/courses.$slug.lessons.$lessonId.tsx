@@ -24,9 +24,10 @@ import {
   getQuizByLessonId,
   getQuizWithQuestions,
   getBestAttempt,
+  getAttemptsByUser,
 } from "~/services/quizService";
 import { computeResult } from "~/services/quizScoringService";
-import { awardLessonXp } from "~/services/gamificationService";
+import { awardLessonXp, awardQuizXp } from "~/services/gamificationService";
 import { LessonProgressStatus } from "~/db/schema";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
@@ -325,12 +326,20 @@ export async function action({ params, request }: Route.ActionArgs) {
       }
     }
 
+    const previousAttempts = getAttemptsByUser(currentUserId, quizId);
+    const isFirstTry = previousAttempts.length === 0;
+
     const result = computeResult(currentUserId, quizId, selectedAnswers);
     if (!result) {
       throw data("Failed to score quiz", { status: 500 });
     }
 
-    return { quizResult: result };
+    let quizXpResult = null;
+    if (result.passed) {
+      quizXpResult = awardQuizXp(currentUserId, quizId, isFirstTry);
+    }
+
+    return { quizResult: result, quizXpResult };
   }
 
   throw data("Invalid action", { status: 400 });
@@ -428,6 +437,7 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
   }, [justCompleted, nextLesson, course.slug, navigate, fetcher.data]);
 
   const quizResult = quizFetcher.data?.quizResult ?? null;
+  const quizXpResult = quizFetcher.data?.quizXpResult ?? null;
   const isSubmittingQuiz = quizFetcher.state !== "idle";
 
   if (pppBlocked) {
@@ -564,6 +574,7 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
               quiz={quiz}
               bestAttempt={bestAttempt}
               quizResult={quizResult}
+              quizXpResult={quizXpResult}
               quizFetcher={quizFetcher}
               isSubmitting={isSubmittingQuiz}
             />
@@ -792,6 +803,7 @@ function QuizSection({
   quiz,
   bestAttempt,
   quizResult,
+  quizXpResult,
   quizFetcher,
   isSubmitting,
 }: {
@@ -822,6 +834,12 @@ function QuizSection({
       correctOptionId: number | null;
     }>;
   } | null;
+  quizXpResult: {
+    xpAwarded: number;
+    firstTryBonus: boolean;
+    levelUp: boolean;
+    newLevel: number;
+  } | null;
   quizFetcher: ReturnType<typeof useFetcher>;
   isSubmitting: boolean;
 }) {
@@ -834,8 +852,24 @@ function QuizSection({
   useEffect(() => {
     if (quizResult && !retaking) {
       if (quizResult.passed) {
+        const description = [];
+        if (quizXpResult?.firstTryBonus) {
+          description.push(
+            `+15 XP first-try bonus!`,
+          );
+        }
+        if (quizXpResult?.levelUp) {
+          description.push(`🎉 Level ${quizXpResult.newLevel}!`);
+        }
+        const xpMsg = quizXpResult
+          ? `+${quizXpResult.xpAwarded} XP`
+          : "";
         toast.success(
-          `Quiz passed! Score: ${Math.round(quizResult.score * 100)}%`
+          `Quiz passed! Score: ${Math.round(quizResult.score * 100)}%${xpMsg ? ` — ${xpMsg}` : ""}`,
+          {
+            description:
+              description.length > 0 ? description.join(" — ") : undefined,
+          },
         );
       } else {
         toast.error(
@@ -843,7 +877,7 @@ function QuizSection({
         );
       }
     }
-  }, [quizResult, retaking]);
+  }, [quizResult, retaking, quizXpResult]);
 
   const allAnswered = quiz.questions.every(
     (q) => selectedAnswers[q.id] !== undefined

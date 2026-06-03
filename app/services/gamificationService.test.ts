@@ -17,6 +17,7 @@ import { markLessonComplete } from "./progressService";
 import {
   calculateLevel,
   awardLessonXp,
+  awardQuizXp,
   getUserStats,
   getPointsLog,
 } from "./gamificationService";
@@ -554,6 +555,102 @@ describe("awardLessonXp — course completion", () => {
 
     expect(result.courseCompleted).toBe(true);
     expect(result.courseCompletedBonusXp).toBe(200);
+  });
+});
+
+describe("awardQuizXp", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    testDb = createTestDb();
+    base = seedBaseData(testDb);
+  });
+
+  it("awards 25 XP for passing a quiz", () => {
+    const result = awardQuizXp(base.user.id, 1, false);
+
+    expect(result.xpAwarded).toBe(25);
+  });
+
+  it("inserts a quiz_pass points_log entry", () => {
+    awardQuizXp(base.user.id, 1, false);
+
+    const log = testDb
+      .select()
+      .from(schema.userPointsLog)
+      .where(eq(schema.userPointsLog.reason, schema.PointsReason.QuizPass))
+      .all();
+    expect(log).toHaveLength(1);
+    expect(log[0].userId).toBe(base.user.id);
+    expect(log[0].points).toBe(25);
+    expect(log[0].referenceId).toBe(1);
+  });
+
+  it("awards +15 XP first-try bonus when firstTry is true", () => {
+    const result = awardQuizXp(base.user.id, 1, true);
+
+    expect(result.xpAwarded).toBe(40); // 25 + 15
+    expect(result.firstTryBonus).toBe(true);
+
+    const bonusLog = testDb
+      .select()
+      .from(schema.userPointsLog)
+      .where(
+        eq(schema.userPointsLog.reason, schema.PointsReason.FirstTryBonus),
+      )
+      .all();
+    expect(bonusLog).toHaveLength(1);
+    expect(bonusLog[0].points).toBe(15);
+    expect(bonusLog[0].referenceId).toBe(1);
+  });
+
+  it("does not award first-try bonus when firstTry is false", () => {
+    const result = awardQuizXp(base.user.id, 1, false);
+
+    expect(result.xpAwarded).toBe(25);
+    expect(result.firstTryBonus).toBe(false);
+  });
+
+  it("updates user total_points", () => {
+    awardQuizXp(base.user.id, 1, true);
+
+    const user = testDb
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, base.user.id))
+      .get();
+    expect(user?.totalPoints).toBe(40);
+  });
+
+  it("is idempotent — second call for same quiz returns 0 XP", () => {
+    const first = awardQuizXp(base.user.id, 1, true);
+    expect(first.xpAwarded).toBe(40);
+
+    const second = awardQuizXp(base.user.id, 1, false);
+    expect(second.xpAwarded).toBe(0);
+
+    const logs = testDb.select().from(schema.userPointsLog).all();
+    expect(logs).toHaveLength(2); // quiz_pass + first_try_bonus
+  });
+
+  it("returns levelUp false when XP does not cross a level boundary", () => {
+    const result = awardQuizXp(base.user.id, 1, false);
+
+    expect(result.levelUp).toBe(false);
+    expect(result.newLevel).toBe(1);
+  });
+
+  it("returns levelUp true when XP crosses a level boundary", () => {
+    testDb
+      .update(schema.users)
+      .set({ totalPoints: 95 })
+      .where(eq(schema.users.id, base.user.id))
+      .run();
+
+    const result = awardQuizXp(base.user.id, 1, true);
+
+    // 95 + 40 = 135, level 2
+    expect(result.levelUp).toBe(true);
+    expect(result.newLevel).toBe(2);
   });
 });
 
