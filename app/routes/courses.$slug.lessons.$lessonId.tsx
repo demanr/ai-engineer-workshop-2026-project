@@ -424,7 +424,10 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
           );
         }
         if (xp.levelUp) {
-          description.push(`🎉 Level ${xp.newLevel}!`);
+          toast("🎉 Level up!", {
+            description: `You've reached Level ${xp.newLevel}!`,
+            duration: 5000,
+          });
         }
         toast.success(`+${xp.xpAwarded} XP`, {
           description: description.length > 0 ? description.join(" — ") : undefined,
@@ -854,12 +857,13 @@ function QuizSection({
       if (quizResult.passed) {
         const description = [];
         if (quizXpResult?.firstTryBonus) {
-          description.push(
-            `+15 XP first-try bonus!`,
-          );
+          description.push("+15 XP first-try bonus!");
         }
         if (quizXpResult?.levelUp) {
-          description.push(`🎉 Level ${quizXpResult.newLevel}!`);
+          toast("🎉 Level up!", {
+            description: `You've reached Level ${quizXpResult.newLevel}!`,
+            duration: 5000,
+          });
         }
         const xpMsg = quizXpResult
           ? `+${quizXpResult.xpAwarded} XP`
