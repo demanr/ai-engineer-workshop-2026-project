@@ -404,6 +404,11 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
       const xp = fetcher.data?.xpResult;
       if (xp?.xpAwarded && xp.xpAwarded > 0) {
         const description = [];
+        if (xp.courseCompleted && xp.courseCompletedBonusXp) {
+          description.push(
+            `+${xp.courseCompletedBonusXp} XP for completing the course!`,
+          );
+        }
         if (xp.streakMilestone) {
           description.push(
             `🔥 ${xp.streakMilestone.day}-day streak! +${xp.streakMilestone.bonusXp} XP bonus`,

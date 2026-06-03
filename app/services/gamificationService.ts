@@ -1,6 +1,14 @@
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, or, desc, sql } from "drizzle-orm";
 import { db } from "~/db";
-import { users, userPointsLog, PointsReason } from "~/db/schema";
+import {
+  users,
+  userPointsLog,
+  lessonProgress,
+  lessons,
+  modules,
+  LessonProgressStatus,
+  PointsReason,
+} from "~/db/schema";
 
 export function calculateLevel(totalPoints: number): number {
   return Math.floor(Math.sqrt(totalPoints / 100)) + 1;
@@ -14,6 +22,45 @@ function isConsecutiveDay(today: string, lastDate: string): boolean {
   const todayTs = new Date(today + "T00:00:00Z").getTime();
   const lastTs = new Date(lastDate + "T00:00:00Z").getTime();
   return todayTs - lastTs === 86_400_000;
+}
+
+function getLessonIdsForCourse(courseId: number): number[] {
+  const courseModules = db
+    .select({ id: modules.id })
+    .from(modules)
+    .where(eq(modules.courseId, courseId))
+    .all();
+
+  if (courseModules.length === 0) return [];
+
+  const courseLessons = db
+    .select({ id: lessons.id })
+    .from(lessons)
+    .where(
+      or(...courseModules.map((m) => eq(lessons.moduleId, m.id)))!,
+    )
+    .all();
+
+  return courseLessons.map((l) => l.id);
+}
+
+function isCourseCompleted(userId: number, courseId: number): boolean {
+  const lessonIds = getLessonIdsForCourse(courseId);
+  if (lessonIds.length === 0) return false;
+
+  const completedCount = db
+    .select({ count: sql<number>`count(*)` })
+    .from(lessonProgress)
+    .where(
+      and(
+        eq(lessonProgress.userId, userId),
+        eq(lessonProgress.status, LessonProgressStatus.Completed),
+        or(...lessonIds.map((id) => eq(lessonProgress.lessonId, id)))!,
+      ),
+    )
+    .get();
+
+  return (completedCount?.count ?? 0) >= lessonIds.length;
 }
 
 export function awardLessonXp(
@@ -93,8 +140,10 @@ export function awardLessonXp(
   }
 
   const lessonXp = 10;
-  const totalXpAwarded = lessonXp + milestoneExtraXp;
-  const newTotalPoints = user.totalPoints + totalXpAwarded;
+  let totalXpAwarded = lessonXp + milestoneExtraXp;
+  let newTotalPoints = user.totalPoints + totalXpAwarded;
+  let courseCompleted = false;
+  let courseCompletedBonusXp = 0;
 
   db.insert(userPointsLog)
     .values({
@@ -117,6 +166,35 @@ export function awardLessonXp(
       .run();
   }
 
+  // Check course completion after awarding lesson XP
+  const existingCourseComplete = db
+    .select()
+    .from(userPointsLog)
+    .where(
+      and(
+        eq(userPointsLog.userId, userId),
+        eq(userPointsLog.reason, PointsReason.CourseComplete),
+        eq(userPointsLog.referenceId, courseId),
+      ),
+    )
+    .get();
+
+  if (!existingCourseComplete && isCourseCompleted(userId, courseId)) {
+    courseCompleted = true;
+    courseCompletedBonusXp = 200;
+    totalXpAwarded += courseCompletedBonusXp;
+    newTotalPoints += courseCompletedBonusXp;
+
+    db.insert(userPointsLog)
+      .values({
+        userId,
+        points: courseCompletedBonusXp,
+        reason: PointsReason.CourseComplete,
+        referenceId: courseId,
+      })
+      .run();
+  }
+
   db.update(users)
     .set({
       totalPoints: newTotalPoints,
@@ -133,7 +211,8 @@ export function awardLessonXp(
     streakCount,
     levelUp: afterLevel > beforeLevel,
     newLevel: afterLevel,
-    courseCompleted: false,
+    courseCompleted,
+    courseCompletedBonusXp,
     streakMilestone,
   };
 }

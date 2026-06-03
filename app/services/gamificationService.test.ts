@@ -12,6 +12,8 @@ vi.mock("~/db", () => ({
   },
 }));
 
+import { markLessonComplete } from "./progressService";
+
 import {
   calculateLevel,
   awardLessonXp,
@@ -190,8 +192,8 @@ describe("awardLessonXp", () => {
     expect(result.newLevel).toBe(2);
   });
 
-  it("returns courseCompleted false (handled in later issue)", () => {
-    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 1);
+  it("returns courseCompleted false when not all lessons are done", () => {
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 2);
 
     const result = awardLessonXp(base.user.id, lessons[0].id, base.course.id);
 
@@ -201,6 +203,7 @@ describe("awardLessonXp", () => {
 
 describe("awardLessonXp — streak", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     testDb = createTestDb();
     base = seedBaseData(testDb);
   });
@@ -434,20 +437,131 @@ describe("awardLessonXp — streak", () => {
   });
 });
 
-describe("getUserStats", () => {
+describe("awardLessonXp — course completion", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
     testDb = createTestDb();
     base = seedBaseData(testDb);
   });
 
-  it("returns totalPoints, level, pointsToNextLevel, streakCount, lastActivityDate", () => {
-    const stats = getUserStats(base.user.id);
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-    expect(stats).toHaveProperty("totalPoints");
-    expect(stats).toHaveProperty("level");
-    expect(stats).toHaveProperty("pointsToNextLevel");
-    expect(stats).toHaveProperty("streakCount");
-    expect(stats).toHaveProperty("lastActivityDate");
+  it("detects when the last lesson in a course is completed", () => {
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 2);
+
+    markLessonComplete(base.user.id, lessons[0].id);
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+
+    vi.setSystemTime(new Date("2026-06-02T12:00:00Z"));
+    markLessonComplete(base.user.id, lessons[1].id);
+    const result = awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+
+    expect(result.courseCompleted).toBe(true);
+    expect(result.courseCompletedBonusXp).toBe(200);
+  });
+
+  it("awards 200 XP course completion bonus on completing the last lesson", () => {
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 2);
+
+    markLessonComplete(base.user.id, lessons[0].id);
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+
+    vi.setSystemTime(new Date("2026-06-02T12:00:00Z"));
+    markLessonComplete(base.user.id, lessons[1].id);
+    const result = awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+
+    expect(result.xpAwarded).toBe(210); // 10 lesson + 200 bonus
+    expect(result.courseCompleted).toBe(true);
+
+    const courseLog = testDb
+      .select()
+      .from(schema.userPointsLog)
+      .where(
+        eq(schema.userPointsLog.reason, schema.PointsReason.CourseComplete),
+      )
+      .all();
+    expect(courseLog).toHaveLength(1);
+    expect(courseLog[0].points).toBe(200);
+    expect(courseLog[0].referenceId).toBe(base.course.id);
+
+    const user = testDb
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, base.user.id))
+      .get();
+    expect(user?.totalPoints).toBe(10 + 210); // 220
+  });
+
+  it("does not award course completion bonus more than once", () => {
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 3);
+
+    // Use gaps to avoid streak milestones
+    markLessonComplete(base.user.id, lessons[0].id);
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+    vi.setSystemTime(new Date("2026-06-05T12:00:00Z"));
+    markLessonComplete(base.user.id, lessons[1].id);
+    awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+    vi.setSystemTime(new Date("2026-06-10T12:00:00Z"));
+    markLessonComplete(base.user.id, lessons[2].id);
+    const completeResult = awardLessonXp(base.user.id, lessons[2].id, base.course.id);
+    expect(completeResult.courseCompleted).toBe(true);
+    expect(completeResult.xpAwarded).toBe(210); // 10 lesson + 200 bonus (no streak)
+
+    // Only one course_complete entry
+    const courseLogs = testDb
+      .select()
+      .from(schema.userPointsLog)
+      .where(
+        eq(schema.userPointsLog.reason, schema.PointsReason.CourseComplete),
+      )
+      .all();
+    expect(courseLogs).toHaveLength(1);
+  });
+
+  it("detects course completion across multiple modules", () => {
+    const mod1 = testDb
+      .insert(schema.modules)
+      .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+      .returning()
+      .get();
+
+    const mod2 = testDb
+      .insert(schema.modules)
+      .values({ courseId: base.course.id, title: "Module 2", position: 2 })
+      .returning()
+      .get();
+
+    const l1 = testDb
+      .insert(schema.lessons)
+      .values({ moduleId: mod1.id, title: "Lesson 1", position: 1 })
+      .returning()
+      .get();
+
+    const l2 = testDb
+      .insert(schema.lessons)
+      .values({ moduleId: mod2.id, title: "Lesson 2", position: 1 })
+      .returning()
+      .get();
+
+    markLessonComplete(base.user.id, l1.id);
+    awardLessonXp(base.user.id, l1.id, base.course.id);
+    vi.setSystemTime(new Date("2026-06-02T12:00:00Z"));
+    markLessonComplete(base.user.id, l2.id);
+    const result = awardLessonXp(base.user.id, l2.id, base.course.id);
+
+    expect(result.courseCompleted).toBe(true);
+    expect(result.courseCompletedBonusXp).toBe(200);
+  });
+});
+
+describe("getUserStats", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    testDb = createTestDb();
+    base = seedBaseData(testDb);
   });
 
   it("returns correct values for a fresh user", () => {
