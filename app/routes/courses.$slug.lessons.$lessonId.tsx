@@ -403,10 +403,17 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     if (justCompleted) {
       const xp = fetcher.data?.xpResult;
       if (xp?.xpAwarded && xp.xpAwarded > 0) {
+        const description = [];
+        if (xp.streakMilestone) {
+          description.push(
+            `🔥 ${xp.streakMilestone.day}-day streak! +${xp.streakMilestone.bonusXp} XP bonus`,
+          );
+        }
+        if (xp.levelUp) {
+          description.push(`🎉 Level ${xp.newLevel}!`);
+        }
         toast.success(`+${xp.xpAwarded} XP`, {
-          description: xp.levelUp
-            ? `🎉 Level ${xp.newLevel}!`
-            : undefined,
+          description: description.length > 0 ? description.join(" — ") : undefined,
         });
       }
       if (nextLesson) {

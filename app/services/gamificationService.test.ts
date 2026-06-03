@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
 
@@ -86,8 +86,14 @@ describe("calculateLevel", () => {
 
 describe("awardLessonXp", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
     testDb = createTestDb();
     base = seedBaseData(testDb);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("awards 10 XP for completing a lesson", () => {
@@ -145,12 +151,19 @@ describe("awardLessonXp", () => {
     expect(user?.totalPoints).toBe(10);
   });
 
-  it("returns streakCount from the user record", () => {
+  it("updates streakCount to 1 on first completion", () => {
     const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 1);
 
     const result = awardLessonXp(base.user.id, lessons[0].id, base.course.id);
 
-    expect(result.streakCount).toBe(0);
+    expect(result.streakCount).toBe(1);
+    const user = testDb
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, base.user.id))
+      .get();
+    expect(user?.streakCount).toBe(1);
+    expect(user?.lastActivityDate).toBe("2026-06-01");
   });
 
   it("returns levelUp false when XP does not cross a level boundary", () => {
@@ -165,7 +178,6 @@ describe("awardLessonXp", () => {
   it("returns levelUp true when XP crosses a level boundary", () => {
     const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 2, 2);
 
-    // Give user 95 XP so 95 + 10 = 105 crosses to level 2
     testDb
       .update(schema.users)
       .set({ totalPoints: 95 })
@@ -173,7 +185,7 @@ describe("awardLessonXp", () => {
       .run();
 
     const result = awardLessonXp(base.user.id, lessons[0].id, base.course.id);
-    // 95 + 10 = 105, sqrt(105/100) = sqrt(1.05) = 1.02, floor(1.02) + 1 = 2
+
     expect(result.levelUp).toBe(true);
     expect(result.newLevel).toBe(2);
   });
@@ -184,6 +196,241 @@ describe("awardLessonXp", () => {
     const result = awardLessonXp(base.user.id, lessons[0].id, base.course.id);
 
     expect(result.courseCompleted).toBe(false);
+  });
+});
+
+describe("awardLessonXp — streak", () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    base = seedBaseData(testDb);
+  });
+
+  it("increments streak on consecutive calendar days", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 3);
+
+    // Day 1
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+
+    // Day 2
+    vi.setSystemTime(new Date("2026-06-02T12:00:00Z"));
+    const result2 = awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+    expect(result2.streakCount).toBe(2);
+
+    // Day 3
+    vi.setSystemTime(new Date("2026-06-03T12:00:00Z"));
+    const result3 = awardLessonXp(base.user.id, lessons[2].id, base.course.id);
+    expect(result3.streakCount).toBe(3);
+
+    vi.useRealTimers();
+  });
+
+  it("does not increment streak on the same calendar day", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 2);
+
+    const first = awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+    expect(first.streakCount).toBe(1);
+
+    // Complete another lesson same day — streak stays 1
+    const second = awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+    expect(second.streakCount).toBe(1);
+
+    vi.useRealTimers();
+  });
+
+  it("resets streak to 1 after a gap of more than 1 day", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 2);
+
+    // Day 1
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+
+    // Day 3 (skipped day 2)
+    vi.setSystemTime(new Date("2026-06-03T12:00:00Z"));
+    const result = awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+    expect(result.streakCount).toBe(1);
+
+    vi.useRealTimers();
+  });
+
+  it("updates last_activity_date to the current UTC date", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 1);
+
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+
+    const user = testDb
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, base.user.id))
+      .get();
+    expect(user?.lastActivityDate).toBe("2026-06-15");
+
+    vi.useRealTimers();
+  });
+
+  it("awards 50 XP milestone bonus at 3-day streak", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 3);
+
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+
+    vi.setSystemTime(new Date("2026-06-02T12:00:00Z"));
+    awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+
+    vi.setSystemTime(new Date("2026-06-03T12:00:00Z"));
+    const result = awardLessonXp(base.user.id, lessons[2].id, base.course.id);
+
+    expect(result.xpAwarded).toBe(60); // 10 lesson + 50 milestone
+    expect(result.streakMilestone).toEqual({ day: 3, bonusXp: 50 });
+
+    const logs = testDb
+      .select()
+      .from(schema.userPointsLog)
+      .where(eq(schema.userPointsLog.reason, schema.PointsReason.StreakMilestone))
+      .all();
+    expect(logs).toHaveLength(1);
+    expect(logs[0].points).toBe(50);
+    expect(logs[0].referenceId).toBe(3);
+
+    const user = testDb
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, base.user.id))
+      .get();
+    expect(user?.totalPoints).toBe(10 + 10 + 60); // 80
+
+    vi.useRealTimers();
+  });
+
+  it("awards 100 XP milestone bonus at 7-day streak", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 7);
+
+    for (let i = 0; i < 6; i++) {
+      vi.setSystemTime(new Date(`2026-06-${String(i + 1).padStart(2, "0")}T12:00:00Z`));
+      awardLessonXp(base.user.id, lessons[i].id, base.course.id);
+    }
+
+    vi.setSystemTime(new Date("2026-06-07T12:00:00Z"));
+    const result = awardLessonXp(base.user.id, lessons[6].id, base.course.id);
+
+    expect(result.xpAwarded).toBe(110); // 10 lesson + 100 milestone
+    expect(result.streakMilestone).toEqual({ day: 7, bonusXp: 100 });
+
+    const user = testDb
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, base.user.id))
+      .get();
+    expect(user?.streakCount).toBe(7);
+    expect(user?.totalPoints).toBe(10 * 7 + 50 + 100); // 220
+
+    vi.useRealTimers();
+  });
+
+  it("awards 500 XP milestone bonus at 30-day streak", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 30);
+
+    for (let i = 0; i < 29; i++) {
+      vi.setSystemTime(new Date(`2026-06-${String(i + 1).padStart(2, "0")}T12:00:00Z`));
+      awardLessonXp(base.user.id, lessons[i].id, base.course.id);
+    }
+
+    vi.setSystemTime(new Date("2026-06-30T12:00:00Z"));
+    const result = awardLessonXp(base.user.id, lessons[29].id, base.course.id);
+
+    expect(result.xpAwarded).toBe(510); // 10 lesson + 500 milestone
+    expect(result.streakMilestone).toEqual({ day: 30, bonusXp: 500 });
+
+    const user = testDb
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, base.user.id))
+      .get();
+    expect(user?.streakCount).toBe(30);
+    expect(user?.totalPoints).toBe(10 * 30 + 50 + 100 + 500); // 950
+
+    vi.useRealTimers();
+  });
+
+  it("does not award milestone bonus again at same milestone in future streak", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 6);
+
+    // First streak: days 1, 2, 3 → milestone at day 3
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+    vi.setSystemTime(new Date("2026-06-02T12:00:00Z"));
+    awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+    vi.setSystemTime(new Date("2026-06-03T12:00:00Z"));
+    const firstMilestone = awardLessonXp(base.user.id, lessons[2].id, base.course.id);
+    expect(firstMilestone.streakMilestone).toEqual({ day: 3, bonusXp: 50 });
+
+    // Reset streak with gap
+    vi.setSystemTime(new Date("2026-06-10T12:00:00Z"));
+    const reset = awardLessonXp(base.user.id, lessons[3].id, base.course.id);
+    expect(reset.streakCount).toBe(1);
+    expect(reset.streakMilestone).toBeUndefined();
+
+    // Build up to day 3 again
+    vi.setSystemTime(new Date("2026-06-11T12:00:00Z"));
+    awardLessonXp(base.user.id, lessons[4].id, base.course.id);
+    vi.setSystemTime(new Date("2026-06-12T12:00:00Z"));
+    const secondMilestone = awardLessonXp(base.user.id, lessons[5].id, base.course.id);
+    expect(secondMilestone.streakCount).toBe(3);
+    expect(secondMilestone.streakMilestone).toBeUndefined();
+
+    // Only one milestone entry in the log
+    const milestoneLogs = testDb
+      .select()
+      .from(schema.userPointsLog)
+      .where(eq(schema.userPointsLog.reason, schema.PointsReason.StreakMilestone))
+      .all();
+    expect(milestoneLogs).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+
+  it("does not award milestone bonus on days after the milestone (no double-count within streak)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const { lessons } = createModuleWithLessons(base.course.id, "Module 1", 1, 5);
+
+    awardLessonXp(base.user.id, lessons[0].id, base.course.id);
+    vi.setSystemTime(new Date("2026-06-02T12:00:00Z"));
+    awardLessonXp(base.user.id, lessons[1].id, base.course.id);
+    vi.setSystemTime(new Date("2026-06-03T12:00:00Z"));
+    awardLessonXp(base.user.id, lessons[2].id, base.course.id);
+    expect(
+      testDb
+        .select()
+        .from(schema.userPointsLog)
+        .where(eq(schema.userPointsLog.reason, schema.PointsReason.StreakMilestone))
+        .all(),
+    ).toHaveLength(1);
+
+    // Day 4 — no milestone
+    vi.setSystemTime(new Date("2026-06-04T12:00:00Z"));
+    const day4 = awardLessonXp(base.user.id, lessons[3].id, base.course.id);
+    expect(day4.xpAwarded).toBe(10);
+    expect(day4.streakMilestone).toBeUndefined();
+
+    // Day 5 — no milestone
+    vi.setSystemTime(new Date("2026-06-05T12:00:00Z"));
+    const day5 = awardLessonXp(base.user.id, lessons[4].id, base.course.id);
+    expect(day5.xpAwarded).toBe(10);
+
+    vi.useRealTimers();
   });
 });
 
@@ -234,9 +481,6 @@ describe("getUserStats", () => {
     const stats = getUserStats(base.user.id);
     expect(stats.totalPoints).toBe(400);
     expect(stats.level).toBe(3);
-    // level 3: floor(sqrt(400/100)) + 1 = floor(2) + 1 = 3
-    // points at level 3 start: 100 * (3-1)^2 = 100 * 4 = 400
-    // next level (4) at: 100 * 3^2 = 900
     expect(stats.pointsToNextLevel).toBe(500);
   });
 });
